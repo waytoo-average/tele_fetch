@@ -1,9 +1,9 @@
-name: Fetch Telegram Tips
+name: fetch
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"   # every hour
-  workflow_dispatch:       # allows manual run
+    - cron: "0 * * * *" # runs every hour (UTC)
 
 jobs:
   fetch:
@@ -23,10 +23,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Restore Telegram session
+        run: |
+          echo "${{ secrets.TG_SESSION }}" | base64 -d > anon.session
+
       - name: Run fetch script
         env:
-          TG_API_ID: ${{ secrets.TG_API_ID }}
-          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
