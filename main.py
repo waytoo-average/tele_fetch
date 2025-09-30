@@ -3,10 +3,10 @@ import json
 import time
 import requests
 import firebase_admin
-from firebase_admin import credentials, messaging, db
+from firebase_admin import credentials, db, firestore
 
 # ---------------------------
-# 1. Config (from GitHub Secrets)
+# 1. Config (from environment variables / secrets)
 # ---------------------------
 API_KEY = os.getenv("GOOGLE_API_KEY")
 
@@ -16,6 +16,9 @@ cred = credentials.Certificate(cred_json)
 firebase_admin.initialize_app(cred, {
     "databaseURL": os.getenv("FIREBASE_DB_URL")
 })
+
+rtdb = db
+firestore_db = firestore.client()
 
 # ---------------------------
 # 2. Folders to Monitor
@@ -62,39 +65,56 @@ def fetch_folder_files(folder_id):
     res = requests.get(url).json()
     return res.get("files", [])
 
-def send_push(topic, title, body):
-    message = messaging.Message(
-        notification=messaging.Notification(title=title, body=body),
-        topic=topic
-    )
-    response = messaging.send(message)
-    print(f"✅ Sent notification to {topic}: {body}")
-
 def save_to_rtdb(topic, file):
     file_id = file["id"]
-    ref = db.reference(f"updates/{topic}/{file_id}")
-    if ref.get() is None:  # not stored before
+    ref = rtdb.reference(f"updates/{topic}/{file_id}")
+    if ref.get() is None:
         ref.set({
             "name": file["name"],
             "link": f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
-            "topic": topic,              # new field
-            "description": "",           # placeholder, can be filled later
+            "topic": topic,
+            "description": "",
             "id": file_id,
             "timestamp": int(time.time())
         })
-        print(f"📂 Saved to RTDB: {file['name']}")
+        print(f"🟢 RTDB → Saved: {file['name']}")
+        return True
+    return False
+
+def save_to_firestore(topic, file):
+    file_id = file["id"]
+    doc_ref = firestore_db.collection("updates").document(topic).collection("files").document(file_id)
+    if not doc_ref.get().exists:
+        doc_ref.set({
+            "name": file["name"],
+            "link": f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
+            "topic": topic,
+            "description": "",
+            "id": file_id,
+            "timestamp": int(time.time())
+        })
+        print(f"🟣 Firestore → Saved: {file['name']}")
         return True
     return False
 
 # ---------------------------
-# 4. Main
+# 4. Main Loop
 # ---------------------------
 def main():
     for topic, folder_id in FOLDERS.items():
         files = fetch_folder_files(folder_id)
         for f in files:
-            if save_to_rtdb(topic, f):
-                send_push(topic, "New Material Added", f["name"])
+            # Save to both DBs
+            new_in_rtdb = save_to_rtdb(topic, f)
+            new_in_fs = save_to_firestore(topic, f)
+            if new_in_rtdb or new_in_fs:
+                print(f"✅ New file recorded: {f['name']} in {topic}")
 
 if __name__ == "__main__":
-    main()
+    while True:
+        print("⏰ Checking Google Drive for new files...")
+        try:
+            main()
+        except Exception as e:
+            print("❌ Error:", e)
+        time.sleep(300)  # 5 minutes
