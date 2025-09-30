@@ -111,10 +111,5 @@ def main():
                 print(f"✅ New file recorded: {f['name']} in {topic}")
 
 if __name__ == "__main__":
-    while True:
-        print("⏰ Checking Google Drive for new files...")
-        try:
-            main()
-        except Exception as e:
-            print("❌ Error:", e)
-        time.sleep(300)  # 5 minutes
+   
+
