@@ -60,59 +60,185 @@ FOLDERS = {
 # ---------------------------
 # 3. Helpers
 # ---------------------------
-def fetch_folder_files(folder_id):
-    url = f"https://www.googleapis.com/drive/v3/files?q='{folder_id}'+in+parents&key={API_KEY}"
-    res = requests.get(url).json()
-    return res.get("files", [])
+def fetch_folder_contents(folder_id):
+    """
+    Fetch all items from a folder, including pagination support.
+    Returns a list of items with their metadata.
+    """
+    try:
+        url = "https://www.googleapis.com/drive/v3/files"
+        params = {
+            'q': f"'{folder_id}' in parents and trashed=false",
+            'key': API_KEY,
+            'pageSize': 1000,
+            'fields': 'nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime)',
+        }
+        
+        all_files = []
+        while True:
+            res = requests.get(url, params=params, timeout=15)
+            res.raise_for_status()
+            data = res.json()
+            
+            all_files.extend(data.get("files", []))
+            
+            # Check for more pages
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token:
+                break
+            params['pageToken'] = next_page_token
+            time.sleep(0.1)  # Small delay between paginated requests
+        
+        return all_files
+    
+    except requests.RequestException as e:
+        print(f"❌ Error fetching folder {folder_id}: {e}")
+        return []
+    except Exception as e:
+        print(f"❌ Unexpected error fetching folder {folder_id}: {e}")
+        return []
+
+def is_folder(item):
+    """Check if an item is a folder based on its mimeType."""
+    return item.get("mimeType") == "application/vnd.google-apps.folder"
+
+def get_all_files_recursively(folder_id, visited=None):
+    """
+    Recursively traverse all subfolders and return only files (not folders).
+    Uses visited set to prevent infinite loops in case of circular references.
+    """
+    if visited is None:
+        visited = set()
+    
+    # Prevent infinite loops
+    if folder_id in visited:
+        return []
+    visited.add(folder_id)
+    
+    all_files = []
+    items = fetch_folder_contents(folder_id)
+    
+    for item in items:
+        if is_folder(item):
+            # It's a folder, recurse into it
+            print(f"  📁 Entering subfolder: {item['name']}")
+            subfolder_files = get_all_files_recursively(item['id'], visited)
+            all_files.extend(subfolder_files)
+        else:
+            # It's a file, add it to our list
+            all_files.append(item)
+    
+    return all_files
 
 def save_to_rtdb(topic, file):
-    file_id = file["id"]
-    ref = rtdb.reference(f"updates/{topic}/{file_id}")
-    if ref.get() is None:
-        ref.set({
-            "name": file["name"],
-            "link": f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
-            "topic": topic,
-            "description": "",
-            "id": file_id,
-            "timestamp": int(time.time())
-        })
-        print(f"🟢 RTDB → Saved: {file['name']}")
-        return True
-    return False
+    """Save file metadata to Firebase Realtime Database."""
+    try:
+        file_id = file["id"]
+        ref = rtdb.reference(f"updates/{topic}/{file_id}")
+        
+        if ref.get() is None:
+            ref.set({
+                "name": file["name"],
+                "link": f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
+                "topic": topic,
+                "description": "",
+                "id": file_id,
+                "mimeType": file.get("mimeType", ""),
+                "size": file.get("size", ""),
+                "createdTime": file.get("createdTime", ""),
+                "modifiedTime": file.get("modifiedTime", ""),
+                "timestamp": int(time.time())
+            })
+            print(f"🟢 RTDB → Saved: {file['name']}")
+            return True
+        return False
+    
+    except Exception as e:
+        print(f"❌ Error saving to RTDB: {e}")
+        return False
 
 def save_to_firestore(topic, file):
-    file_id = file["id"]
-    doc_ref = firestore_db.collection("updates").document(topic).collection("files").document(file_id)
-    if not doc_ref.get().exists:
-        doc_ref.set({
-            "name": file["name"],
-            "link": f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
-            "topic": topic,
-            "description": "",
-            "id": file_id,
-            "timestamp": int(time.time())
-        })
-        print(f"🟣 Firestore → Saved: {file['name']}")
-        return True
-    return False
+    """Save file metadata to Firestore."""
+    try:
+        file_id = file["id"]
+        doc_ref = firestore_db.collection("updates").document(topic).collection("files").document(file_id)
+        
+        if not doc_ref.get().exists:
+            doc_ref.set({
+                "name": file["name"],
+                "link": f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
+                "topic": topic,
+                "description": "",
+                "id": file_id,
+                "mimeType": file.get("mimeType", ""),
+                "size": file.get("size", ""),
+                "createdTime": file.get("createdTime", ""),
+                "modifiedTime": file.get("modifiedTime", ""),
+                "timestamp": int(time.time())
+            })
+            print(f"🟣 Firestore → Saved: {file['name']}")
+            return True
+        return False
+    
+    except Exception as e:
+        print(f"❌ Error saving to Firestore: {e}")
+        return False
 
 # ---------------------------
 # 4. Main Loop
 # ---------------------------
 def main():
+    """Main execution loop."""
+    print("🚀 Starting Google Drive monitoring script...")
+    print(f"📊 Monitoring {len(FOLDERS)} folders\n")
+    
+    total_new_files = 0
+    
     for topic, folder_id in FOLDERS.items():
-        files = fetch_folder_files(folder_id)
-        for f in files:
-            # Save to both DBs
-            new_in_rtdb = save_to_rtdb(topic, f)
-            new_in_fs = save_to_firestore(topic, f)
-            if new_in_rtdb or new_in_fs:
-                print(f"✅ New file recorded: {f['name']} in {topic}")
+        print(f"\n{'='*60}")
+        print(f"📂 Processing: {topic}")
+        print(f"{'='*60}")
+        
+        try:
+            # Get all files recursively (excluding folders)
+            files = get_all_files_recursively(folder_id)
+            print(f"📄 Found {len(files)} files (after recursively scanning subfolders)")
+            
+            new_files_count = 0
+            for f in files:
+                # Save to both DBs
+                new_in_rtdb = save_to_rtdb(topic, f)
+                new_in_fs = save_to_firestore(topic, f)
+                
+                if new_in_rtdb or new_in_fs:
+                    print(f"✅ New file recorded: {f['name']}")
+                    new_files_count += 1
+                    total_new_files += 1
+                
+                # Small delay to avoid overwhelming the databases
+                time.sleep(0.05)
+            
+            if new_files_count == 0:
+                print(f"✓ No new files in {topic}")
+            else:
+                print(f"✓ Added {new_files_count} new files from {topic}")
+        
+        except Exception as e:
+            print(f"❌ Error processing {topic}: {e}")
+            continue
+        
+        # Delay between folders to respect rate limits
+        time.sleep(0.5)
+    
+    print(f"\n{'='*60}")
+    print(f"🎉 Script completed!")
+    print(f"📊 Total new files added: {total_new_files}")
+    print(f"{'='*60}\n")
 
 if __name__ == "__main__":
-    main()
-   
-
-
-
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n⚠️  Script interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Fatal error: {e}")
