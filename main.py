@@ -110,7 +110,9 @@ def main():
             if new_in_rtdb or new_in_fs:
                 print(f"✅ New file recorded: {f['name']} in {topic}")
 
-if __name__ == "__main__"
+if __name__ == "__main__":
+    main()
    
+
 
 
