@@ -1,6 +1,8 @@
 name: Drive Folder Checker
-
-on
+on:
+  schedule:
+    - cron: "*/90 * * * *"   # every 5 minutes
+  workflow_dispatch:
 
 jobs:
   run-check:
